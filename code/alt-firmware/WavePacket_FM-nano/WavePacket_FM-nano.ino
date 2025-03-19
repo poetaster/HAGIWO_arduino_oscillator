@@ -7,6 +7,8 @@
 //#include <ADC.h>  // Teensy 3.0/3.1 uncomment this line and install http://github.com/pedvide/ADC
 #include <MozziConfigValues.h>
 #define MOZZI_AUDIO_MODE MOZZI_OUTPUT_2PIN_PWM
+#define MOZZI_ANALOG_READ_RESOLUTION 10
+
 #include <Mozzi.h>
 #include <mozzi_analog.h>
 #include <WavePacket.h>
@@ -15,11 +17,6 @@
 // for FMsynth
 #include <Oscil.h>
 #include <tables/cos2048_int8.h> // table for Oscils to play
-#include <tables/sin2048_int8.h>
-#include <tables/saw2048_int8.h> 
-#include <tables/triangle_hermes_2048_int8.h>
-#include <tables/square_no_alias_2048_int8.h>
-#include <tables/triangle_dist_cubed_2048_int8.h>
 #include <mozzi_midi.h>
 #include <mozzi_rand.h>
 #include <mozzi_fixmath.h>
@@ -103,16 +100,7 @@ int lFreq = 10;
 Oscil<COS2048_NUM_CELLS, AUDIO_RATE> aCarrier(COS2048_DATA);
 Oscil<COS2048_NUM_CELLS, AUDIO_RATE> aModulator(COS2048_DATA);
 Oscil<COS2048_NUM_CELLS, CONTROL_RATE> kModIndex(COS2048_DATA);
-
 Oscil<SIN2048_NUM_CELLS, AUDIO_RATE> kLfo(SIN2048_DATA);
-Oscil<SIN2048_NUM_CELLS, AUDIO_RATE> osc1(SIN2048_DATA);
-Oscil<SIN2048_NUM_CELLS, AUDIO_RATE> osc2(SIN2048_DATA);
-Oscil<SIN2048_NUM_CELLS, AUDIO_RATE> osc3(SIN2048_DATA);
-Oscil<SIN2048_NUM_CELLS, AUDIO_RATE> osc4(SIN2048_DATA);
-Oscil<SIN2048_NUM_CELLS, AUDIO_RATE> osc5(SIN2048_DATA);
-Oscil<SIN2048_NUM_CELLS, AUDIO_RATE> osc6(SIN2048_DATA);
-Oscil<SIN2048_NUM_CELLS, AUDIO_RATE> osc7(SIN2048_DATA);
-Oscil<SIN2048_NUM_CELLS, AUDIO_RATE> osc8(SIN2048_DATA);
 
 Q8n8 mod_index;// = float_to_Q8n8(2.0f); // constant version
 Q16n16 deviation;
@@ -171,32 +159,7 @@ int gain_val = 0;
 uint8_t mode = 0;
 uint16_t mode_val = 0;
 
-////chord variables
-int freq1 = 110;//base freq
 
-int freqv1 = 440;//apply voct
-int freqv2 = 440;
-int freqv3 = 440;
-int freqv4 = 440;
-int freqv5 = 440;
-
-byte note1 = 0;//Root
-byte note2 = 0;//2nd
-byte note3 = 0;//3rd
-byte note4 = 0;//4th
-byte note5 = 0;//Root
-
-byte inv_aply1 = 0; //0 = no inv , 1 = inv , Root
-byte inv_aply2 = 0; //2nd
-byte inv_aply3 = 0; //3rd
-byte inv_aply4 = 0; //4th
-bool inv_aply5 = 0; //0 = no output root sound , 1 = output root sound
-
-int inv = 0;
-int inv_knob = 0;
-int chord = 0;
-byte wave = 0;
-////////
 
 
 void setup() {
@@ -213,14 +176,7 @@ void setup() {
  pinMode(SW_PIN_2, INPUT_PULLUP);
  digitalWrite(SW_PIN_1, HIGH);
  digitalWrite(SW_PIN_2, HIGH);
- osc1.setTable(SIN2048_DATA);
- osc2.setTable(SIN2048_DATA);
- osc3.setTable(SIN2048_DATA);
- osc4.setTable(SIN2048_DATA);
- osc5.setTable(SIN2048_DATA);
- osc6.setTable(SIN2048_DATA);
- osc7.setTable(SIN2048_DATA);
- osc8.setTable(SIN2048_DATA);
+  
   // FMsetup
   kNoteChangeDelay.set(768); // ms countdown, taylored to resolution of CONTROL_RATE
   kModIndex.setFreq(.768f); // sync with kNoteChangeDelay
@@ -255,7 +211,6 @@ void check_modes(){
   else{
     mode = 0;
   }
-  //if (mode_val > 10) mode =4;
   //mode = (mode + mode_val)%3;
 
   if(mode==2){
@@ -288,12 +243,10 @@ void updateControl() {
  check_modes(); 
   if ( mode == 0 ) {
     updateReso();
-  } else if(mode ==1) {
+  } else if ( mode == 1 ) {
     updateFM();
-  } else if(mode ==2){
+  } else {
     updateWavePacket();
-  } else if(mode==4) {
-    CHORD_setFreqs();
   }
 }
 
@@ -442,7 +395,7 @@ void updateReso() {
 
   target_note = noteA;
   
-  if (noteB > 22 ) {
+  if (noteB > 25 ) {
     target_note = noteA + noteB /2;
   } else {
     target_note = noteA;
@@ -485,10 +438,10 @@ AudioOutput updateAudio() {
   //Serial.println(map(kLfo.next(), -128, 128, 0, 255));
   
   if ( mode == 0 ) {
-    return  MonoOutput::from16Bit( voice.next() )  ;
+    return  MonoOutput::from8Bit( voice.next() )  ;
   } else if ( mode == 1 ) {
     Q15n16 modulation = deviation * aModulator.next() >> 8;
-    return MonoOutput::fromNBit(16, aCarrier.phMod(modulation) ); // envelope.next()
+    return MonoOutput::from8Bit(aCarrier.phMod(modulation)); // envelope.next()
   } else if ( mode == 2 ) {
      return  MonoOutput::from16Bit( wavey.next() )  ;
   }
@@ -549,241 +502,4 @@ void HandleNoteOff(byte channel, byte pitch, byte velocity){
 void stopNote(byte channel, byte pitch, byte velocity){
   voice.noteOff(channel, pitch, velocity);
   digitalWrite(13,LOW);
-}
-
-const static byte chord_table[8][4]PROGMEM = {
- {  0,  68, 119,  205,  },//Maj
- { 0,  68, 119,  187,  },//Maj7
- { 0,  68, 119,  239,  },//Majadd9
- { 0,  34, 119,  205,  },//sus2
- { 0,  51, 119,  239,  },//minadd9
- { 0,  51, 119,  170,  },//min7
- { 0,  51, 119,  205,  },//min
- { 0,  0,  0,  0,  }//root
-};
-
-void CHORD_setFreqs(){
-  int freq_val = map(mozziAnalogRead(FUNDAMENTAL_PIN), 0, 1023, 1024, 6144);
-  int v_oct_val = map(mozziAnalogRead(VOCT), 0, 1023, 1024, 6144);
-  int p1_pot_val = mozziAnalogRead(BANDWIDTH_PIN) ;
-  int p1_cv_val = mozziAnalogRead(P1CV);
-  int p2_pot_val = mozziAnalogRead(CENTREFREQ_PIN) ;
-  int p2_cv_val = mozziAnalogRead(P2CV);
-  chord = constrain((p2_pot_val / 128) + (p2_cv_val / 128), 0, 7);
-
-
- //inversion setting
- inv = constrain((p1_pot_val  / 64) + (p1_cv_val / 64) , 0, 15);
-   switch (inv) {
-     case 0:
-       inv_aply1 = 0;
-       inv_aply2 = 0;
-       inv_aply3 = 0;
-       inv_aply4 = 0;
-       inv_aply5 = 0;
-       break;
-
-     case 1:
-       inv_aply1 = 1;
-       inv_aply2 = 0;
-       inv_aply3 = 0;
-       inv_aply4 = 0;
-       inv_aply5 = 0;
-       break;
-
-     case 2:
-       inv_aply1 = 1;
-       inv_aply2 = 1;
-       inv_aply3 = 0;
-       inv_aply4 = 0;
-       inv_aply5 = 0;
-       break;
-
-     case 3:
-       inv_aply1 = 1;
-       inv_aply2 = 1;
-       inv_aply3 = 1;
-       inv_aply4 = 0;
-       inv_aply5 = 0;
-       break;
-
-     case 4:
-       inv_aply1 = 1;
-       inv_aply2 = 1;
-       inv_aply3 = 1;
-       inv_aply4 = 1;
-       inv_aply5 = 0;
-       break;
-
-     case 5:
-       inv_aply1 = 2;
-       inv_aply2 = 1;
-       inv_aply3 = 1;
-       inv_aply4 = 1;
-       inv_aply5 = 0;
-       break;
-
-     case 6:
-       inv_aply1 = 2;
-       inv_aply2 = 2;
-       inv_aply3 = 1;
-       inv_aply4 = 1;
-       inv_aply5 = 0;
-       break;
-
-     case 7:
-       inv_aply1 = 2;
-       inv_aply2 = 2;
-       inv_aply3 = 2;
-       inv_aply4 = 1;
-       inv_aply5 = 0;
-       break;
-
-     case 8:
-       inv_aply1 = 2;
-       inv_aply2 = 2;
-       inv_aply3 = 2;
-       inv_aply4 = 1;
-       inv_aply5 = 1;
-       break;
-
-     case 9:
-       inv_aply1 = 2;
-       inv_aply2 = 2;
-       inv_aply3 = 1;
-       inv_aply4 = 1;
-       inv_aply5 = 1;
-       break;
-
-     case 10:
-       inv_aply1 = 2;
-       inv_aply2 = 1;
-       inv_aply3 = 1;
-       inv_aply4 = 1;
-       inv_aply5 = 1;
-       break;
-
-     case 11:
-       inv_aply1 = 1;
-       inv_aply2 = 1;
-       inv_aply3 = 1;
-       inv_aply4 = 1;
-       inv_aply5 = 1;
-       break;
-
-     case 12:
-       inv_aply1 = 1;
-       inv_aply2 = 1;
-       inv_aply3 = 1;
-       inv_aply4 = 0;
-       inv_aply5 = 1;
-       break;
-
-     case 13:
-       inv_aply1 = 1;
-       inv_aply2 = 1;
-       inv_aply3 = 0;
-       inv_aply4 = 0;
-       inv_aply5 = 1;
-       break;
-
-     case 14:
-       inv_aply1 = 1;
-       inv_aply2 = 0;
-       inv_aply3 = 0;
-       inv_aply4 = 0;
-       inv_aply5 = 1;
-       break;
-
-     case 15:
-       inv_aply1 = 0;
-       inv_aply2 = 0;
-       inv_aply3 = 0;
-       inv_aply4 = 0;
-       inv_aply5 = 1;
-       break;
-   }
- //setting chord note
-   note1 = (pgm_read_byte(&(chord_table[chord][0])));
-   note2 = (pgm_read_byte(&(chord_table[chord][1])));
-   note3 = (pgm_read_byte(&(chord_table[chord][2])));
-   note4 = (pgm_read_byte(&(chord_table[chord][3])));
-   note5 = (pgm_read_byte(&(chord_table[chord][0])));
- //OSC frequency knob
- freq1 = freq_val / 4 ;
- //set wave
- if (p1_pot_val >= 1020) { //inv knob max
-   wave = (p2_pot_val / 128);
- }
- freqv1 = freq1 * pow(2, (pgm_read_float(&(voctpow[v_oct_val + 205 * inv_aply1 + note1])))); //ROOT
- freqv2 = freq1 * pow(2, (pgm_read_float(&(voctpow[v_oct_val + 205 * inv_aply2 + note2])))); //2nd
- freqv3 = freq1 * pow(2, (pgm_read_float(&(voctpow[v_oct_val + 205 * inv_aply3 + note3])))); //3rd
- freqv4 = freq1 * pow(2, (pgm_read_float(&(voctpow[v_oct_val + 205 * inv_aply4 + note4])))); //4th
- freqv5 = freq1 * pow(2, (pgm_read_float(&(voctpow[v_oct_val + note5])))); //ROOT
- osc1.setFreq(freqv1); // set the frequency
- osc2.setFreq(freqv2);
- osc3.setFreq(freqv3);
- osc4.setFreq(freqv4);
- osc5.setFreq(freqv5);
-}
-
-void set_waves(){
-  int p2_pot_val = mozziAnalogRead(CENTREFREQ_PIN) ;
-   switch (round(p2_pot_val/200)-1) {
-   case 0://sin
-     osc1.setTable(SIN2048_DATA);
-     osc2.setTable(SIN2048_DATA);
-     osc3.setTable(SIN2048_DATA);
-     osc4.setTable(SIN2048_DATA);
-     osc5.setTable(SIN2048_DATA);
-     osc6.setTable(SIN2048_DATA);
-     osc7.setTable(SIN2048_DATA);
-     osc8.setTable(SIN2048_DATA);
-     break;
-
-   case 1://tri hermes
-     osc1.setTable(TRIANGLE_HERMES_2048_DATA);
-     osc2.setTable(TRIANGLE_HERMES_2048_DATA);
-     osc3.setTable(TRIANGLE_HERMES_2048_DATA);
-     osc4.setTable(TRIANGLE_HERMES_2048_DATA);
-     osc5.setTable(TRIANGLE_HERMES_2048_DATA);
-     osc6.setTable(TRIANGLE_HERMES_2048_DATA);
-     osc7.setTable(TRIANGLE_HERMES_2048_DATA);
-     osc8.setTable(TRIANGLE_HERMES_2048_DATA);
-     break;
-
-   case 2://tri dist
-     osc1.setTable(TRIANGLE_DIST_CUBED_2048_DATA);
-     osc2.setTable(TRIANGLE_DIST_CUBED_2048_DATA);
-     osc3.setTable(TRIANGLE_DIST_CUBED_2048_DATA);
-     osc4.setTable(TRIANGLE_DIST_CUBED_2048_DATA);
-     osc5.setTable(TRIANGLE_DIST_CUBED_2048_DATA);
-     osc6.setTable(TRIANGLE_DIST_CUBED_2048_DATA);
-     osc7.setTable(TRIANGLE_DIST_CUBED_2048_DATA);
-     osc8.setTable(TRIANGLE_DIST_CUBED_2048_DATA);
-     break;
-
-   case 3://saw
-     osc1.setTable(SAW2048_DATA);
-     osc2.setTable(SAW2048_DATA);
-     osc3.setTable(SAW2048_DATA);
-     osc4.setTable(SAW2048_DATA);
-     osc5.setTable(SAW2048_DATA);
-     osc6.setTable(SAW2048_DATA);
-     osc7.setTable(SAW2048_DATA);
-     osc8.setTable(SAW2048_DATA);
-     break;
-
-   case 4://square
-     osc1.setTable(SQUARE_NO_ALIAS_2048_DATA);
-     osc2.setTable(SQUARE_NO_ALIAS_2048_DATA);
-     osc3.setTable(SQUARE_NO_ALIAS_2048_DATA);
-     osc4.setTable(SQUARE_NO_ALIAS_2048_DATA);
-     osc5.setTable(SQUARE_NO_ALIAS_2048_DATA);
-     osc6.setTable(SQUARE_NO_ALIAS_2048_DATA);
-     osc7.setTable(SQUARE_NO_ALIAS_2048_DATA);
-     osc8.setTable(SQUARE_NO_ALIAS_2048_DATA);
-     break;
-   break;
- }
 }
