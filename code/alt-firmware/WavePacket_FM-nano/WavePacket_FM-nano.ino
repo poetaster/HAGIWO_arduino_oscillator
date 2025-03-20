@@ -7,7 +7,7 @@
 //#include <ADC.h>  // Teensy 3.0/3.1 uncomment this line and install http://github.com/pedvide/ADC
 #include <MozziConfigValues.h>
 #define MOZZI_AUDIO_MODE MOZZI_OUTPUT_2PIN_PWM
-#define MOZZI_ANALOG_READ_RESOLUTION 10
+
 
 #include <Mozzi.h>
 #include <mozzi_analog.h>
@@ -24,8 +24,10 @@
 #include <Smooth.h>
 #include <AutoMap.h> // maps unpredictable inputs to a range
 #include <ADSR.h>
+#include <StateVariable.h>
 
-//#define MOZZI_AUDIO_RATE 32768
+
+#define MOZZI_AUDIO_RATE 32768
 //#define MOZZI_PWM_RATE 32768
 
 bool debug = true;
@@ -57,6 +59,7 @@ bool debug = true;
 // wavetable for oscillator:
 #include <tables/sin2048_int8.h>
 PDResonant voice;
+StateVariable <LOWPASS> svf; // can be LOWPASS, BANDPASS, HIGHPASS or NOTCH
 
 // Reso! analog joystick for controlling speed of modulation: assigned to attack, decay times and sustain level
 #define X A0
@@ -68,8 +71,8 @@ unsigned int y_axis = 512;
 
 // Intmap is a pre-calculated faster version of Arduino's map, OK for pots
 const IntMap kMapF(0,1023,0,20);
-const IntMap kmapX(0, 1023, 10, 200); // A
-const IntMap kmapY(0, 1023, 10, 1000); //D
+const IntMap kmapX(0, 1023, 10, 1000); // A
+const IntMap kmapY(0, 1023, 10, 2000); //D
 
 // AutoMap adapts to range of input as it arrives, useful for LDR's
 AutoMap kMapBw(0,1023,1,600);
@@ -176,7 +179,9 @@ void setup() {
  pinMode(SW_PIN_2, INPUT_PULLUP);
  digitalWrite(SW_PIN_1, HIGH);
  digitalWrite(SW_PIN_2, HIGH);
-  
+  // filter setup
+  svf.setResonance(48); // 0 to 255, 0 is the "sharp" end
+  svf.setCentreFreq(1000);
   // FMsetup
   kNoteChangeDelay.set(768); // ms countdown, taylored to resolution of CONTROL_RATE
   kModIndex.setFreq(.768f); // sync with kNoteChangeDelay
@@ -234,7 +239,9 @@ void check_modes(){
 }
 void read_inputs(){
   gain_val = constrain(mozziAnalogRead(GAIN_CV_PIN)/2, 0 , 255);
-  mode_val = mozziAnalogRead(MODE_CV_PIN);
+  mode_val = constrain(mozziAnalogRead(MODE_CV_PIN), 200, 3000);
+  svf.setCentreFreq(mode_val); // add filter:)
+  svf.setResonance(constrain(mode_val, 24, 196));
 }
 
 
@@ -251,7 +258,7 @@ void updateControl() {
 }
 
 void updateFM() {
-
+   
   //byte cutoff_freq = knob>>4;
   //kAverageF.next( mozziAnalogRead(FUNDAMENTAL_PIN)>>1 ) + kAverageM1.next(mozziAnalogRead(A5)>>1 ) / 2  ,
   
@@ -272,11 +279,11 @@ void updateFM() {
   int bw = mozziAnalogRead(BANDWIDTH_PIN) ;
   int mw = mozziAnalogRead(P1CV);
   // make sure we only mix if we have a signal on mod pin
-  if ( mw > 10 ) {
+  if ( mw > 1 ) {
     modulate = ( bw + mw );
-    modI = map(modulate, 0, 1023, 128, 768);
+    modI = map(modulate, 0, 1023, 4, 256);
   } else {
-    modI = map(bw, 0, 1023, 128, 768);
+    modI = map(bw, 0, 1023, 4, 256);
   }
     
   int cw = mozziAnalogRead(CENTREFREQ_PIN) ;
@@ -347,13 +354,13 @@ void updateWavePacket() {
     kAverageBw.next(mozziAnalogRead<10>(BANDWIDTH_PIN)), // (0 -1023)
     kAverageCf.next(mozziAnalogRead<11>(CENTREFREQ_PIN))); // 0 - 2047
   */
-  int noteA = map(mozziAnalogRead(FUNDAMENTAL_PIN), 0, 1023, 0, 127);  
-  int noteB = map(mozziAnalogRead(VOCT), 0, 1023, 0, 127);
+  int noteA = map(mozziAnalogRead(FUNDAMENTAL_PIN), 0, 1023, 2, 50);  
+  int noteB = map(mozziAnalogRead(VOCT), 0, 1023, 2, 50);
   int target_note;
 
   target_note = noteA;
   
-  if ((noteB + noteA / 2) > 20 ) {
+  if (noteB > 5 ) {
     target_note = noteB + noteA / 2;
   } else {
     target_note = noteA;
@@ -389,22 +396,17 @@ void updateWavePacket() {
 
 void updateReso() {
 
-  int noteA = map(mozziAnalogRead(FUNDAMENTAL_PIN), 0, 1023, 20,50);  
-  int noteB = map(mozziAnalogRead(VOCT), 0, 1023, 20, 50 ); 
+  int noteA = map(mozziAnalogRead(FUNDAMENTAL_PIN), 0, 1023, 5,50);  
+  int noteB = map(mozziAnalogRead(VOCT), 0, 1023, 5, 50 ); 
   int target_note;
 
   target_note = noteA;
   
-  if (noteB > 25 ) {
+  if (noteB > 7 ) {
     target_note = noteA + noteB /2;
   } else {
     target_note = noteA;
   }
-  
-  //x_axis = ( kmapX(mozziAnalogRead<10>(CENTREFREQ_PIN)) ) ; // + kAverageM3.next(mozziAnalogRead<10>(A6)) / 2 );
-  //y_axis = ( kmapY(mozziAnalogRead<10>(BANDWIDTH_PIN) ) ) ; // + kAverageM2.next(mozziAnalogRead<10>(A7)) ) / 2;
-
-
   
   int bw = mozziAnalogRead(BANDWIDTH_PIN) ;
   int bm = mozziAnalogRead(P1CV);
@@ -431,19 +433,24 @@ void updateReso() {
 }
 
 AudioOutput updateAudio() {
-  //I wonder
-  
-  // write out lfo value
-  //analogWrite(11, map(kLfo.next(), -128, 128, 0, 255));
-  //Serial.println(map(kLfo.next(), -128, 128, 0, 255));
-  
   if ( mode == 0 ) {
-    return  MonoOutput::from8Bit( voice.next() )  ;
+    //return  MonoOutput::from8Bit( voice.next() )  ;
+    int input = voice.next();
+    int output = svf.next(input);
+    return MonoOutput::fromNBit(10, output);
   } else if ( mode == 1 ) {
-    Q15n16 modulation = deviation * aModulator.next() >> 8;
-    return MonoOutput::from8Bit(aCarrier.phMod(modulation)); // envelope.next()
+     Q15n16 modulation = deviation * aModulator.next() >> 8;
+     int input = aCarrier.phMod(modulation);
+     int output = svf.next(input);
+     return MonoOutput::fromNBit(10, output);
+  
+    //MonoOutput::from8Bit(); // envelope.next()
+    
   } else if ( mode == 2 ) {
      return  MonoOutput::from16Bit( wavey.next() )  ;
+     //int input = wavey.next() ;
+     //int output = svf.next(input);
+     //return MonoOutput::from16Bit(output);
   }
   return 0; // should not get here
 }
