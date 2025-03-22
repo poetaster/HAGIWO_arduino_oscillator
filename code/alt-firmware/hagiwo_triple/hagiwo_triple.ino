@@ -152,10 +152,10 @@ void setup() {
  pinMode(LED_3_PIN, OUTPUT);
  pinMode(SW_PIN_1, INPUT_PULLUP);
  pinMode(SW_PIN_2, INPUT_PULLUP);
- pinMode(MODE_CV_PIN, INPUT); //poetaster
+ //pinMode(MODE_CV_PIN, INPUT); //poetaster
  digitalWrite(SW_PIN_1, HIGH);
  digitalWrite(SW_PIN_2, HIGH);
- digitalWrite(MODE_CV_PIN, HIGH); //poetaster
+ //digitalWrite(MODE_CV_PIN, HIGH); //poetaster
 
  osc1.setTable(SIN2048_DATA);
  osc2.setTable(SIN2048_DATA);
