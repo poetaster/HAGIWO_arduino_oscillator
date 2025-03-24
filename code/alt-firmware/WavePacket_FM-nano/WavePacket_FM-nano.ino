@@ -144,15 +144,16 @@ Q16n16 carrier_freq, mod_freq, fundemental, bandwidth, centre;
 // FM ratio between oscillator frequencies, stays the same through note range
 Q8n8 mod_to_carrier_ratio = float_to_Q8n8(3.f);
 
+long fmIntensity; // Carries control info from updateControl to updateAudio
+// smoothing for intensity to remove clicks on transitions
+float smoothness = 0.95f;
+Smooth <long> aSmoothIntensity(smoothness);
+
 EventDelay kNoteChangeDelay;
 int gain;
 
 // for note changes
 Q7n8 last_note, note_upper_limit, note_lower_limit, note_change_step, smoothed_note;
-
-// Inefficient, but...until there is a better Smooth....
-Smooth <int> kSmoothNote(0.95f);
-
 
 /*
   This sets the MIDI note that corresponds to 0 volts. Typically, this is
@@ -320,16 +321,18 @@ void updateFM() {
   //byte cutoff_freq = knob>>4;
   //kAverageF.next( mozziAnalogRead(FUNDAMENTAL_PIN)>>1 ) + kAverageM1.next(mozziAnalogRead(A5)>>1 ) / 2  ,
 
-  int note0 = map(mozziAnalogRead(FUNDAMENTAL_PIN), 0, 1023, 2048, 6144);
-  int note1 = map(mozziAnalogRead(VOCT), 0, 1023, 2048, 6144);
+  int note0 = map(mozziAnalogRead(FUNDAMENTAL_PIN), 0, 1023, 2048, 6144); // offset
+  int note1 = map(mozziAnalogRead(VOCT), 0, 1023, 2048, 6144); // note
   int target_note = note0;
 
-  if (note1 > 1048) {
-    target_note = note1 + note0 / 2;
+  if (note1 > 2048 && note0 > 2048) {
+    target_note = note0 + note1 ;
   } else {
-    target_note = note0;
+    target_note = note1;
   }
+  
   last_note = target_note;
+  
   //Serial.println(target_note);
   int modulate, modI;
 
@@ -338,26 +341,29 @@ void updateFM() {
   // make sure we only mix if we have a signal on mod pin
   if ( mw > 1 ) {
     modulate = ( bw + mw );
-    modI = map(modulate, 0, 1023, 64, 256);
+    modI = map(modulate, 0, 1023, 1, 64);
   } else {
-    modI = map(bw, 0, 1023, 64, 256);
+    modI = map(bw, 0, 1023, 1, 64);
   }
 
   // vary the modulation index
   mod_index = (Q8n8)modI + kModIndex.next();
-
+  float modSpeed = (float)modI;
+  aModDepth.setFreq(modSpeed);
+ 
   int cw = mozziAnalogRead(CENTREFREQ_PIN) ;
   int cm = mozziAnalogRead(P2CV);
   // make sure we only mix if we have a signal on mod pin
-  centre = map( cw, 0, 1023, 1, 4);
-  cm = map(cm, 0, 1023, 1, 4);
+  centre = map( cw, 0, 1023, 1, 7);
+  cm = map(cm, 0, 1023, 1, 7);
   if ( cw > 1 ) {
     centre = ( cw + cm ) / 2;
   }
 
-  mod_to_carrier_ratio = (float)centre;
+  mod_to_carrier_ratio = (Q8n8)centre;
+  fmIntensity = ((long)centre * (aModDepth.next())) >> 8;
 
-  smoothed_note = kSmoothNote.next(target_note);
+  //smoothed_note = kSmoothNote.next(target_note);
   setFreqs(target_note);
 
 
@@ -507,30 +513,26 @@ void updateChords() {
     switch (degree) { // 7 is 0111
       case 1:
         aCos1.setFreq(target_note);
-        aCos1b.setFreq(target_note + (float)variation);
+        aCos1b.setFreq(target_note + variation);
         break;
       case 3:
         aCos2.setFreq(target_note);
-        aCos2b.setFreq(target_note + (float)variation);
+        aCos2b.setFreq(target_note + variation);
         break;
       case 5:
         aCos3.setFreq(target_note);
-        aCos3b.setFreq(target_note + (float)variation);
+        aCos3b.setFreq(target_note + variation);
         break;
       case 7:
         aCos4.setFreq(target_note);
-        aCos4b.setFreq(target_note + (float)variation);
+        aCos4b.setFreq(target_note + variation);
         break;
       case 8:
         aCos4.setFreq(target_note);
-        aCos4b.setFreq(target_note + (float)variation);
+        aCos4b.setFreq(target_note + variation);
         break;
     }
-
   }
-
-  // play the note
-  //playNote(note);
 }
 
 
@@ -545,7 +547,8 @@ AudioOutput updateAudio() {
       toSFraction(aCos4.next()) + toSFraction(aCos4b.next()) ;
     return MonoOutput::fromSFix(asig);
   } else if ( mode == 1 ) {
-    Q15n16 modulation = deviation * aModulator.next() >> 8;
+    //Q15n16 modulation = deviation * aModulator.next() >> 8;
+     Q15n16 modulation =  aSmoothIntensity.next(fmIntensity) * aModulator.next();
     return MonoOutput::fromNBit(10, aCarrier.phMod(modulation));
     //int input = aCarrier.phMod(modulation);
     //int output = svf.next(input);
