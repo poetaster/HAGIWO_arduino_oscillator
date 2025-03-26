@@ -379,7 +379,7 @@ void updateWavePacket() {
       kAverageBw.next(mozziAnalogRead<10>(BANDWIDTH_PIN)), // (0 -1023)
       kAverageCf.next(mozziAnalogRead<11>(CENTREFREQ_PIN))); // 0 - 2047
   */
-  int noteA = map(mozziAnalogRead(FUNDAMENTAL_PIN), 0, 4095, 1, 61);
+  int noteA = map(mozziAnalogRead(FUNDAMENTAL_PIN), 0, 4095, 1, 1024);
   int noteB = map(mozziAnalogRead(VOCT), 0, 4095, 1, 61);
   int target_note;
 
@@ -393,13 +393,11 @@ void updateWavePacket() {
 
   int bw = mozziAnalogRead(BANDWIDTH_PIN) ;
   int bm = mozziAnalogRead(P1CV);
-  bandwidth = map(bw, 0, 4095, 10, 600);
+  bandwidth = map(bw, 0, 4095, 1, 1023);
   // make sure we only mix if we have a signal on mod pin
 
-  if ( bm > bw ) {
-    bandwidth = (map(bm, 0, 4095, 10, 600) +  map(bw, 0, 4095, 10, 600)) / 2;
-  } else {
-    bandwidth = map(bw, 0, 4095, 10, 600);
+  if ( bm > 10 ) {
+    bandwidth = (map(bm, 0, 4095, 1, 1023) +  bandwidth) / 2;
   }
   if (debug) {
     Serial.print("band: ");
@@ -409,12 +407,9 @@ void updateWavePacket() {
   int cw = mozziAnalogRead(CENTREFREQ_PIN) ;
   int cm = mozziAnalogRead(P2CV);
   // make sure we only mix if we have a signal on mod pin
-  //centre = map(cw,0,1023,60,600);
-
+  centre = map(cw,0,1023,1,2047);
   if ( cm > cw ) {
-    centre = (map(cm, 0, 4095, 60, 600) + map(cw, 0, 4095, 60, 600) ) / 2;
-  } else {
-    centre = map(cw, 0, 4095, 60, 600);
+    centre = (map(cm, 0, 4095, 10, 2047) + centre ) / 2;
   }
   if (debug) {
     Serial.print("center: ");
