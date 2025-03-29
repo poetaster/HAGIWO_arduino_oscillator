@@ -10,21 +10,24 @@
 #include <Mozzi.h>
 #include <mozzi_analog.h>
 #include <WavePacket.h>
+
 // for FMsynth
 #include <Oscil.h>
 #include <tables/cos2048_int8.h> // table for Oscils to play
+#include <tables/triangle_warm8192_int8.h>
 #include <mozzi_midi.h>
 #include <mozzi_rand.h>
 #include <mozzi_fixmath.h>
-
 #include <Smooth.h>
-
+#include <ADSR.h>
 #include <Midier.h>
 
 #define MOZZI_AUDIO_RATE 32768
 #define MOZZI_CONTROL_RATE 256
-
 //#define MOZZI_PWM_RATE 32768
+// Envelopes
+// --------------------------------------------------------------------
+ADSR <MOZZI_AUDIO_RATE, MOZZI_AUDIO_RATE, unsigned long> envelopeVCO;
 
 bool debug = false;
 
@@ -46,15 +49,9 @@ bool debug = false;
 #define GAIN_CV_PIN A6
 #define MODE_CV_PIN A2
 // Map Analogue channels
-#define CONTROL_RATE 512 // powers of 2 please
-
 
 
 WavePacket <DOUBLE>wavey; // <DOUBLE> wavey; // DOUBLE selects 2 overlapping streams
-
-//ADSR <CONTROL_RATE, AUDIO_RATE> envelope;
-//unsigned int duration, attack, decay, sustain, release_ms;
-int lFreq = 10;
 
 // chordsynth
 
@@ -81,6 +78,7 @@ const midier::Note notes[] = {
   midier::Note::A,
   midier::Note::A,
   midier::Note::B,
+
 };
 const midier::Quality qualities[] = {
   midier::Quality::major,
@@ -93,7 +91,6 @@ const midier::Quality qualities[] = {
   midier::Quality::maj7,
   midier::Quality::aug7,
 };
-
 const midier::Degree degrees[] = { 1, 3, 5, 7 };
 midier::Quality quality = midier::Quality::major; // boring :)
 #include <tables/triangle_warm8192_int8.h>
@@ -110,21 +107,9 @@ Oscil<TRIANGLE_WARM8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos3b(TRIANGLE_WARM8192_DA
 Oscil<TRIANGLE_WARM8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos4b(TRIANGLE_WARM8192_DATA);
 
 
-
 // base pitch frequencies in Q16n16 fixed int format (for speed later)
 int f1, f2, f3, f4, f5, f6, f7;
-int variation()  // changing the return type here enables to easily
-// increase or decrease the variation
-{
-  return  random(16);//mRaw(xorshift96() & 524287UL);
-}
-#define BASE_NOTE_FREQUENCY  16.3516
-// Function converting frequency to offset from BASE_NOTE_FREQUENCY
-float FreqToNote(float frequency) {
-  float x = (frequency / BASE_NOTE_FREQUENCY);
-  float y = 12.0 * log(x) / log(2.0);
-  return y;
-}
+
 // for FMsynth
 
 Oscil<COS2048_NUM_CELLS, MOZZI_AUDIO_RATE> aCarrier(COS2048_DATA);
@@ -146,57 +131,16 @@ Smooth <long> aSmoothIntensity(smoothness);
 
 int gain;
 
-// for note changes
+// for note changes not really using this
 Q7n8 last_note, note_upper_limit, note_lower_limit, note_change_step, smoothed_note;
 
-/*
-  This sets the MIDI note that corresponds to 0 volts. Typically, this is
-  either C0 (MIDI note 12) or C1 (MIDI note 24).
-*/
-static const uint32_t midi_note_at_zero_volts = 24;
-static const float semitones_per_octave = 12.0f;
-static const float volts_per_semitone = 1.0f / semitones_per_octave;
-static const float a4_frequency = 440.0f;
-static const uint32_t a4_midi_note = 69;
-
-/*
-  Converts Volts/octave to frequency.
-
-  Just like when converting MIDI notes to frequency, there is an
-  exponential relationship between Volts/octave and note frequency.
-  Helpfully, the same formula used there can be used here.
-*/
-
-float volts_to_frequency(float volts) {
-  float semitones = volts * semitones_per_octave;
-  float adjusted_semitones = semitones + midi_note_at_zero_volts;
-  float semitones_away_from_a4 = adjusted_semitones - (float)(a4_midi_note);
-  return powf(2.0f, semitones_away_from_a4 / semitones_per_octave) * a4_frequency;
-}
-/*
-  Converts Volts/octave to its corresponding MIDI note number.
-
-  Similar to the frequncy to MIDI note number conversion, this
-  only returns the nearest MIDI note, so any remainder will be
-  discarded.
-*/
-uint32_t volts_to_midi_note(float volts) {
-  return ceil(midi_note_at_zero_volts + ceil(volts * semitones_per_octave));
-}
-/*
-   returns voltage for sensor reading with analog read
-   resolution is usually 1023.0 but could be 12 bits.
-   4.096/1024.0 internal voltage ref is 4.09a6
-*/
-float sensor_to_midi(float sensorValue) {
-  float volts = sensorValue * (4.096 / 4095.0);
-  return ceil(midi_note_at_zero_volts + ceil(volts * semitones_per_octave));
-
-}
 
 int gain_val = 0;
 uint8_t mode = 0;
 uint16_t mode_val = 0;
+unsigned int notesPlaying;
+bool notePlaying = false;
+bool noteReset = true;
 
 
 void setup() {
@@ -213,7 +157,8 @@ void setup() {
   pinMode(SW_PIN_2, INPUT_PULLUP);
   digitalWrite(SW_PIN_1, HIGH);
   digitalWrite(SW_PIN_2, HIGH);
-
+  // wavepacket sample
+  //   wavey.setTable(RAVEN_ARH_DATA);
   // chordsynth
   // select base frequencies using mtof (midi to freq) and fixed-point numbers
   f1 = mtof(48);
@@ -226,10 +171,10 @@ void setup() {
   aCos3.setFreq(f3);
   aCos4.setFreq(f4);
   // set frequencies of duplicate oscillators
-  aCos1b.setFreq(f1 + variation());
-  aCos2b.setFreq(f2 + variation());
-  aCos3b.setFreq(f3 + variation());
-  aCos4b.setFreq(f4 + variation());
+  aCos1b.setFreq(f1 + 3);
+  aCos2b.setFreq(f2 + 1);
+  aCos3b.setFreq(f3 + 5);
+  aCos4b.setFreq(f4 + 2);
 
   // filter setup
   //svf.setResonance(48); // 0 to 255, 0 is the "sharp" end
@@ -238,18 +183,15 @@ void setup() {
   // FMsetup
 
   kModIndex.setFreq(.768f); // sync with kNoteChangeDelay
- 
 
-  note_change_step = Q7n0_to_Q7n8(3);
-  note_upper_limit = Q7n0_to_Q7n8(64);
-  note_lower_limit = Q7n0_to_Q7n8(24);
-  //note0 = note_lower_limit;
-  //note1 = note_lower_limit + Q7n0_to_Q7n8(5);
-  //attack = 0;
-  //decay = 500;
   // might add back
-  //envelope.setADLevels(255, 200);
-  //envelope.setTimes(50, 200, 1000, 200); // 10000 is so the note will sustain 10 seconds unless a noteOff comes
+
+  envelopeVCO.setADLevels(25, 25);
+  envelopeVCO.setAttackLevel(1);
+  envelopeVCO.setDecayLevel(25);
+  envelopeVCO.setSustainLevel(25);
+  envelopeVCO.setReleaseLevel(20);
+  envelopeVCO.setTimes(10, 50, 8000, 50); // 10000 is so the note will sustain 10 seconds unless a noteOff comes
 
   // for the env
   randSeed(); // fresh random
@@ -290,9 +232,23 @@ void check_modes() {
     return;
   }
 }
+
 void read_inputs() {
-  gain_val = constrain(mozziAnalogRead(GAIN_CV_PIN), 1 , 4);
-  mode_val = constrain(mozziAnalogRead(MODE_CV_PIN), 200, 3000);
+  gain_val = mozziAnalogRead(GAIN_CV_PIN); // using for trigger
+  mode_val = mozziAnalogRead(MODE_CV_PIN); // using for gate
+
+  mode_val = map(mode_val, 0, 4095, 1000, 10000); //let's scale it for weaker signals.
+  if (mode_val > 1000) { // only update the envelope if we have a certain amount of signal
+    envelopeVCO.setTimes(100, 2000, mode_val, 700);
+  }
+  if (gain_val > 350 && ! notePlaying ) { // don't retrigger since it's noisy
+    envelopeVCO.noteOn();
+    notePlaying = true;
+  } else if (gain_val < 20 && notePlaying ) {
+    envelopeVCO.noteOff();
+    notePlaying = false;
+  }
+
   //svf.setCentreFreq(mode_val); // add filter:)
   //svf.setResonance(gain_val);
 }
@@ -335,9 +291,9 @@ void updateFM() {
   // make sure we only mix if we have a signal on mod pin
   if ( mw > 1 ) {
     modulate = ( bw + mw );
-    modI = map(modulate, 0, 4095, 1, 64);
+    modI = map(modulate, 0, 4095, 1, 512);
   } else {
-    modI = map(bw, 0, 4095, 1, 64);
+    modI = map(bw, 0, 4095, 1, 512);
   }
 
   // vary the modulation index
@@ -348,8 +304,8 @@ void updateFM() {
   int cw = mozziAnalogRead(CENTREFREQ_PIN) ;
   int cm = mozziAnalogRead(P2CV);
   // make sure we only mix if we have a signal on mod pin
-  centre = map( cw, 0, 4095, 1, 7);
-  cm = map(cm, 0, 4095, 1, 7);
+  centre = map( cw, 0, 4095, 1, 512);
+  cm = map(cm, 0, 4095, 1, 512);
   if ( cw > 1 ) {
     centre = ( cw + cm ) / 2;
   }
@@ -379,25 +335,19 @@ void updateWavePacket() {
       kAverageBw.next(mozziAnalogRead<10>(BANDWIDTH_PIN)), // (0 -1023)
       kAverageCf.next(mozziAnalogRead<11>(CENTREFREQ_PIN))); // 0 - 2047
   */
-  int noteA = map(mozziAnalogRead(FUNDAMENTAL_PIN), 0, 4095, 1, 1024);
-  int noteB = map(mozziAnalogRead(VOCT), 0, 4095, 1, 61);
+
+  int noteA = map(mozziAnalogRead(FUNDAMENTAL_PIN), 0, 4095, 1, 92);
+  int noteB = map(mozziAnalogRead(VOCT), 0, 4095, 1, 396);
   int target_note;
-
-  target_note = noteA;
-
-  if (noteB > 5 ) {
-    target_note = noteB + noteA / 2;
-  } else {
-    target_note = noteA;
-  }
+  target_note = noteB + noteA;
 
   int bw = mozziAnalogRead(BANDWIDTH_PIN) ;
   int bm = mozziAnalogRead(P1CV);
-  bandwidth = map(bw, 0, 4095, 1, 1023);
+  bandwidth = map(bw, 0, 4095, 1, 256);
   // make sure we only mix if we have a signal on mod pin
 
   if ( bm > 10 ) {
-    bandwidth = (map(bm, 0, 4095, 1, 1023) +  bandwidth) / 2;
+    bandwidth = (map(bm, 0, 4095, 1, 256) +  bandwidth) / 2;
   }
   if (debug) {
     Serial.print("band: ");
@@ -407,9 +357,9 @@ void updateWavePacket() {
   int cw = mozziAnalogRead(CENTREFREQ_PIN) ;
   int cm = mozziAnalogRead(P2CV);
   // make sure we only mix if we have a signal on mod pin
-  centre = map(cw,0,1023,1,2047);
-  if ( cm > cw ) {
-    centre = (map(cm, 0, 4095, 10, 2047) + centre ) / 2;
+  centre = map(cw, 0, 1023, 1, 512);
+  if ( cm > 10 ) {
+    centre = (map(cm, 0, 4095, 1, 512) + centre ) / 2 ;
   }
   if (debug) {
     Serial.print("center: ");
@@ -481,38 +431,37 @@ void updateChords() {
     Serial.println(noteB);
     Serial.println();
   }
-
-
-
   // iterate over all the degrees
   for (int degree : degrees)
   {
     midier::Interval interval = midier::triad::interval(quality, degree);
     // find out the interval to be added to the root note for this degree and quality
     // we're hacking about with modes for the accidentals :)
-    switch (noteIndex) {
-      case 1:
-        interval = midier::scale::interval(modes[3], degree);
-        break;
-      case 3:
-        interval = midier::scale::interval(modes[3], degree);
-        break;
-      case 6:
-        interval = midier::scale::interval(modes[3], degree);
-        break;
-      case 8:
-        interval = midier::scale::interval(modes[3], degree);
-        break;
-      case 10:
-        interval = midier::scale::interval(modes[3], degree);
-        break;
-    }
+
     // calculate the note of this degree
     const midier::Note note = root + interval;
     float target_note ;// = mtof(root);
     float v_note = mtof(noteA + variation);
-    target_note = mtof(midier::midi::number(note, octave));
+    int midi_number = midier::midi::number(note, octave);
 
+    switch (noteIndex) {
+      case 1:
+        midi_number = midi_number + 1; //root = midier::Note(root, midier::Accidental::Sharp); //interval = midier::scale::interval(quality, midier::Interval::m2);
+        break;
+      case 3:
+        midi_number = midi_number + 1;
+        break;
+      case 6:
+        midi_number = midi_number + 1;
+        break;
+      case 8:
+        midi_number = midi_number + 1;
+        break;
+      case 10:
+        midi_number = midi_number + 1;
+        break;
+    }
+    target_note = mtof(midi_number);
     switch (degree) { // 7 is 0111
       case 1:
         aCos1.setFreq(target_note);
@@ -544,25 +493,33 @@ void updateChords() {
 }
 
 
-
-
 AudioOutput updateAudio() {
+
+  envelopeVCO.update();
+
   if ( mode == 0 ) {
-    auto asig =
-      (toSFraction(aCos1.next()) + toSFraction(aCos1b.next()) +
-      toSFraction(aCos2.next()) + toSFraction(aCos2b.next()) +
-      toSFraction(aCos3.next()) + toSFraction(aCos3b.next()) +
-      toSFraction(aCos4.next()) + toSFraction(aCos4b.next()) ) ;
+    auto asig = (
+                  toSFraction( envelopeVCO.next() *
+                               ( aCos1.next() +  aCos1b.next()  +  aCos2.next() + aCos2b.next()  +
+                                 aCos3.next() + aCos3b.next()  + aCos4.next() + aCos4b.next() ) ) );
     return MonoOutput::fromSFix(asig);
+
   } else if ( mode == 1 ) {
-    //Q15n16 modulation = deviation * aModulator.next() >> 8;
     Q15n16 modulation =  aSmoothIntensity.next(fmIntensity) * aModulator.next();
-    return MonoOutput::fromNBit(10, aCarrier.phMod(modulation));
+    return MonoOutput::from16Bit( (int)  envelopeVCO.next() * aCarrier.phMod(modulation) );
+
     //int input = aCarrier.phMod(modulation);
     //int output = svf.next(input);
     //return MonoOutput::fromNBit(10, output);
+
   } else if ( mode == 2 ) {
-    return  MonoOutput::from16Bit( wavey.next() )  ;
+    //return   MonoOutput::from16Bit( wavey.next() )  ;
+    envelopeVCO.setAttackLevel(1);
+    envelopeVCO.setDecayLevel(60);
+    envelopeVCO.setSustainLevel(60);
+    envelopeVCO.setReleaseLevel(50);
+    auto asig = (  toSFraction (  wavey.next()) );
+    return  MonoOutput::fromSFix(asig * toSFraction(envelopeVCO.next() ) )  ;
   }
   return 0; // should not get here
 }
