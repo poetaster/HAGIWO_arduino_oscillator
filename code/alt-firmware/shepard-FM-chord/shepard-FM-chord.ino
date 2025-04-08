@@ -9,15 +9,16 @@
 #define MOZZI_AUDIO_MODE MOZZI_OUTPUT_2PIN_PWM
 #include <Mozzi.h>
 #include <mozzi_analog.h>
-#include <WavePacket.h>
 // for FMsynth
 #include <Oscil.h>
 #include <tables/cos2048_int8.h> // table for Oscils to play
-#include <tables/triangle2048_int8.h>
+#include <tables/triangle2048_int8.h> // for chord synth
 #include <mozzi_midi.h>
 #include <mozzi_rand.h>
 #include <mozzi_fixmath.h>
 #include <Smooth.h>
+#include <EventDelay.h>
+#include <Line.h>
 #include <ADSR.h>
 #include <Midier.h>
 
@@ -49,8 +50,31 @@ bool debug = false;
 #define MODE_CV_PIN A2
 // Map Analogue channels
 
+//shepard tone
+#include <tables/sin8192_int8.h>
+// reset and sync vol and freq controls each cycle
+EventDelay  kTriggerDelay0;
+EventDelay  kTriggerDelay1;
+EventDelay  kTriggerDelay2;
+const UFix<7, 0> NOTE_CENTRE = 60, NOTE_RANGE = 12;
+const UFix<7, 0> NOTE_START_FIXEDPOINT = NOTE_CENTRE + NOTE_RANGE;
+const UFix<7, 0> NOTE_END_FIXEDPOINT = NOTE_CENTRE - NOTE_RANGE;
+#define GLISS_SECONDS 1.f
+float glisssecs = 1.f;
+//#define CONTROL_STEPS_PER_GLISS ((unsigned int)((float)MOZZI_CONTROL_RATE * GLISS_SECONDS))
+#define CONTROL_STEPS_PER_GLISS ((unsigned int)((float)MOZZI_CONTROL_RATE * GLISS_SECONDS))
+Line <UFix<7, 9>> kGliss0; // Line to slide frequency
+Line <UFix<7, 9>> kGliss1; // Line to slide frequency
+Line <UFix<7, 9>> kGliss2; // Line to slide frequency
+// audio volumes updated each control interrupt and reused in audio
+SFix<0, 14> v0, v1;
+// harmonics using the other osc
 
-WavePacket <DOUBLE>wavey; // <DOUBLE> wavey; // DOUBLE selects 2 overlapping streams
+// harmonics
+Oscil<SIN8192_NUM_CELLS, MOZZI_AUDIO_RATE> aShep0(SIN8192_DATA);
+Oscil<SIN8192_NUM_CELLS, MOZZI_AUDIO_RATE> aShep1(SIN8192_DATA);
+Oscil<SIN8192_NUM_CELLS, MOZZI_AUDIO_RATE> aShep2(SIN8192_DATA);
+
 
 // chordsynth
 
@@ -179,6 +203,12 @@ void setup() {
 
   // for the env
   randSeed(); // fresh random
+
+  // shepard
+  kTriggerDelay0.start(0); // start trigger before polling in updateControl()
+  kTriggerDelay1.start((int)((GLISS_SECONDS * 100.f) / 2.f));
+  kTriggerDelay2.start((int)((GLISS_SECONDS * 100.f) / 2.f));
+
   startMozzi(CONTROL_RATE);
 }
 
@@ -248,13 +278,13 @@ void updateControl() {
   } else if ( mode == 1 ) {
     updateFM();
   } else {
-    updateWavePacket();
+    updateShepard();
   }
 }
 
 void updateFM() {
   envelopeVCO.setADLevels(25, 25);
-  
+
   //byte cutoff_freq = knob>>4;
   //kAverageF.next( mozziAnalogRead(FUNDAMENTAL_PIN)>>1 ) + kAverageM1.next(mozziAnalogRead(A5)>>1 ) / 2  ,
 
@@ -317,46 +347,58 @@ void setFreqs(Q8n8 midi_note) {
 
 }
 
-void updateWavePacket() {
+void updateShepard() {
   /*
-      wavey.set(kAverageF.next(mozziAnalogRead<10>(FUNDAMENTAL_PIN))+10, // 10 - 1024
-      kAverageBw.next(mozziAnalogRead<10>(BANDWIDTH_PIN)), // (0 -1023)
-      kAverageCf.next(mozziAnalogRead<11>(CENTREFREQ_PIN))); // 0 - 2047
+    aCarrier, aModulator, aModDepth aCos1, aCos2, aCos3
   */
+  envelopeVCO.setADLevels(75, 75);
+  int noteB = mozziAnalogRead(VOCT);
+  noteB = map(noteB, 0, 4095, 24, 82);
+  int noteOffset = map(mozziAnalogRead(FUNDAMENTAL_PIN), 0, 4095, 1, 12);
 
-  envelopeVCO.setADLevels(70, 70);
-  int noteA = map(mozziAnalogRead(FUNDAMENTAL_PIN), 0, 4095, 1, 92);
-  int noteB = map(mozziAnalogRead(VOCT), 0, 4095, 1, 396);
-  int target_note;
-  target_note = noteB + noteA;
-  if (debug) Serial.print("fund:");
-  if (debug) Serial.println(noteA);
   int bw = mozziAnalogRead(BANDWIDTH_PIN) ;
   int bm = mozziAnalogRead(P1CV);
-  bandwidth = map(bw, 0, 4095, 1, 256);
+  bandwidth = map(bw, 0, 4095, 1, 10);
+
   // make sure we only mix if we have a signal on mod pin
-
   if ( bm > 10 ) {
-    bandwidth = (map(bm, 0, 4095, 1, 256) +  bandwidth) / 2;
+    //bandwidth = (map(bm, 0, 4095, 1, 256) +  bandwidth) / 2;
   }
-
   int cw = mozziAnalogRead(CENTREFREQ_PIN) ;
   int cm = mozziAnalogRead(P2CV);
   // make sure we only mix if we have a signal on mod pin
-  centre = map(cw, 0, 1023, 1, 512);
+  centre = map(cw, 0, 1023, 1, 24);
   if ( cm > 10 ) {
-    centre = (map(cm, 0, 4095, 1, 512) + centre ) / 2 ;
+    centre = (map(cm, 0, 4095, 1, 24) + centre ) / 2 ;
   }
-  wavey.set( target_note, bandwidth, centre );
-  //wavey.set( note0,  map(bw, 0, 1023, 128, 1023), map(cw, 0, 1023, 8, 512) );
+  if (kTriggerDelay0.ready()) {
+    kGliss0.set(noteB, noteB + noteOffset, CONTROL_STEPS_PER_GLISS);
+    kTriggerDelay0.start((int)(bandwidth * 50.f)); // milliseconds
 
+  }
 
+  if (kTriggerDelay1.ready()) {
+    kGliss1.set(noteB, noteB + noteOffset, CONTROL_STEPS_PER_GLISS);
+    kTriggerDelay1.start((int)(bandwidth * 100.f)); // milliseconds
+  }
+  
+  if (kTriggerDelay2.ready()) {
+    kGliss2.set(noteB, noteB + noteOffset, CONTROL_STEPS_PER_GLISS);
+    kTriggerDelay2.start((int)(bandwidth * 1500.f)); // milliseconds
+
+  }
+  auto gliss0 = kGliss0.next(); // fixed point
+  auto gliss1 = kGliss1.next(); // fixed point
+  auto gliss2 = kGliss2.next(); // fixed point
+  aShep0.setFreq(mtof(gliss0));
+  aShep1.setFreq(mtof(gliss1));
+  aShep2.setFreq(mtof(gliss1));
 }
 
 void updateChords() {
-  
+
   envelopeVCO.setADLevels(25, 25);
-  
+
   int bw = mozziAnalogRead(BANDWIDTH_PIN) ;
   int bm = mozziAnalogRead(P1CV);
   int variation ;
@@ -456,7 +498,7 @@ AudioOutput updateAudio() {
   envelopeVCO.update();
 
   if ( mode == 0 ) {
-    
+
     auto asig = (
                   toSFraction( envelopeVCO.next() *
                                ( aCos1.next() +  aCos1b.next()  +  aCos2.next() + aCos2b.next()  +
@@ -473,10 +515,12 @@ AudioOutput updateAudio() {
     //return MonoOutput::fromNBit(10, output);
 
   } else if ( mode == 2 ) {
-      
+    auto asig = toSInt(aShep0.next()) + toSInt(aShep1.next()) + toSInt(aShep2.next());
+    return MonoOutput::fromSFix(asig * toSFraction(envelopeVCO.next() ) )  ;//AudioOutput::fromSFix(asig);
+
     //return   MonoOutput::from16Bit( wavey.next() )  ;
-    auto asig = (  toSFraction (  wavey.next()) );
-    return  MonoOutput::fromSFix(asig * toSFraction(envelopeVCO.next() ) )  ;
+    //auto asig = (  toSFraction (  wavey.next()) );
+    //return  MonoOutput::fromSFix(asig * toSFraction(envelopeVCO.next() ) )  ;
   }
   return 0; // should not get here
 }
