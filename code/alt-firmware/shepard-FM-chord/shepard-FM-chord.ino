@@ -206,7 +206,7 @@ void setup() {
 
   // shepard
   kTriggerDelay0.start(0); // start trigger before polling in updateControl()
-  kTriggerDelay1.start((int)((GLISS_SECONDS * 100.f) / 2.f));
+  kTriggerDelay1.start((int)((GLISS_SECONDS * 50.f) / 2.f));
   kTriggerDelay2.start((int)((GLISS_SECONDS * 100.f) / 2.f));
 
   startMozzi(CONTROL_RATE);
@@ -358,7 +358,7 @@ void updateShepard() {
 
   int bw = mozziAnalogRead(BANDWIDTH_PIN) ;
   int bm = mozziAnalogRead(P1CV);
-  bandwidth = map(bw, 0, 4095, 1, 10);
+  bandwidth = map(bw, 0, 4095, 1, 20);
 
   // make sure we only mix if we have a signal on mod pin
   if ( bm > 10 ) {
@@ -373,18 +373,18 @@ void updateShepard() {
   }
   if (kTriggerDelay0.ready()) {
     kGliss0.set(noteB, noteB + noteOffset, CONTROL_STEPS_PER_GLISS);
-    kTriggerDelay0.start((int)(bandwidth * 50.f)); // milliseconds
+    kTriggerDelay0.start((int)(bandwidth * 20.f)); // milliseconds
 
   }
 
   if (kTriggerDelay1.ready()) {
     kGliss1.set(noteB, noteB + noteOffset, CONTROL_STEPS_PER_GLISS);
-    kTriggerDelay1.start((int)(bandwidth * 100.f)); // milliseconds
+    kTriggerDelay1.start((int)(bandwidth * 40.f)); // milliseconds
   }
   
   if (kTriggerDelay2.ready()) {
     kGliss2.set(noteB, noteB + noteOffset, CONTROL_STEPS_PER_GLISS);
-    kTriggerDelay2.start((int)(bandwidth * 1500.f)); // milliseconds
+    kTriggerDelay2.start((int)(bandwidth * 60.f)); // milliseconds
 
   }
   auto gliss0 = kGliss0.next(); // fixed point
